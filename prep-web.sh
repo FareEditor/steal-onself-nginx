@@ -8,6 +8,12 @@ echo "This script is part of the article: https://docs.fareeditor.com/vless-stea
 echo "For the full profit and complete understanding, please read it first."
 echo -e "========================================================================\n"
 
+# Install dnsutils if dig is missing
+if ! command -v dig &> /dev/null; then
+    echo "Installing dnsutils for DNS verification..."
+    apt update -y && apt install -y dnsutils
+fi
+
 echo "Detecting external IP address..."
 SERVER_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me)
 
@@ -16,33 +22,45 @@ if [ -z "$SERVER_IP" ]; then
     exit 1
 fi
 
-echo -e "\nCurrent external server IP: \033[1;32m$SERVER_IP\033[0m\n"
+echo -e "Current server IP: \033[1;32m$SERVER_IP\033[0m"
 
-read -p "Enter the domain to be used (e.g., example.com): " DOMAIN
+read -p "Enter your domain (e.g., example.com): " DOMAIN
 
 if [ -z "$DOMAIN" ]; then
     echo "Domain cannot be empty. Exiting."
     exit 1
 fi
 
-read -p "Is the A record for $DOMAIN pointing to IP $SERVER_IP? (y/n): " A_RECORD_CONFIRM
+echo "Verifying DNS records for $DOMAIN..."
 
-if [[ "$A_RECORD_CONFIRM" != "y" && "$A_RECORD_CONFIRM" != "Y" ]]; then
-    echo "Please configure the A record with your DNS provider, wait for DNS propagation, and run the script again."
+# Perform DNS lookup
+RESOLVED_IP=$(dig +short "$DOMAIN" | tail -n1)
+
+if [ -z "$RESOLVED_IP" ]; then
+    echo -e "\033[1;31mError: Could not resolve domain $DOMAIN. Check your DNS settings.\033[0m"
     exit 1
 fi
 
-echo -e "\nStarting package installation and configuration...\n"
+if [ "$RESOLVED_IP" != "$SERVER_IP" ]; then
+    echo -e "\033[1;31mIP Mismatch!\033[0m"
+    echo "Domain $DOMAIN resolves to: $RESOLVED_IP"
+    echo "But your server IP is: $SERVER_IP"
+    echo "Please update your A record and wait for DNS propagation."
+    exit 1
+else
+    echo -e "\033[1;32mSuccess! Domain $DOMAIN correctly points to $SERVER_IP.\033[0m\n"
+fi
 
-# Step 1: Update and install packages
+echo "Starting package installation and configuration..."
+
+# Step 1: Install Nginx and Certbot
 apt update && apt upgrade -y
-apt install curl nginx certbot python3-certbot-nginx -y
+apt install -y curl nginx certbot python3-certbot-nginx
 
-# Create webroot directory if it doesn't exist and set permissions
 mkdir -p /var/www/html
 chown -R www-data:www-data /var/www/html
 
-# Temporary Nginx config for Certbot (HTTP-01) challenge
+# Temporary Nginx config for Certbot
 cat <<EOF > /etc/nginx/sites-available/default
 server {
     listen 80 default_server;
@@ -54,11 +72,10 @@ EOF
 
 systemctl restart nginx
 
-# Request certificate in non-interactive mode
+# Request certificate
 certbot certonly --webroot -w /var/www/html -d $DOMAIN --register-unsafely-without-email --agree-tos --non-interactive
 
 # Step 2: Final Nginx config (Steal Oneself)
-# Note the escaping of Nginx variables (\$host, \$request_uri, \$uri)
 cat <<EOF > /etc/nginx/sites-available/default
 server {
     listen 80;
@@ -91,8 +108,7 @@ server {
 }
 EOF
 
-# Test Nginx syntax and restart
 nginx -t
 systemctl restart nginx
 
-echo -e "\n\033[1;32mDone! Nginx and certificates have been successfully configured.\033[0m"
+echo -e "\n\033[1;32mDone! Web server and SSL certificates are ready for REALITY.\033[0m"
